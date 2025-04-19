@@ -1,9 +1,17 @@
-
 package:
-  name: svt
+    name: fwvip-common
 
-  paths:
-    project: {}
-    export: 
-      lib-dirs:
-      - src
+    dep-sets:
+    - name: default
+      deps: []
+
+    - name: default-dev
+      deps: []
+
+    paths:
+      export:
+        lib-dirs:
+          - src
+      project:
+        lib-dirs:
+          - src
