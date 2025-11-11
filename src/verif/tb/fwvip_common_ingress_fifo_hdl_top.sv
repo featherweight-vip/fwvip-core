@@ -21,6 +21,13 @@ module fwvip_common_ingress_fifo_hdl_top;
         forever #5 clock = ~clock; // 100MHz
     end
 
+`ifdef TRACE_ENABLED
+    initial begin
+        $dumpfile("sim.vcd");
+        $dumpvars;
+    end
+`endif // TRACE_ENABLED
+
     initial begin
         reset = 1'b1;
         repeat (5) @(posedge clock);

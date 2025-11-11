@@ -16,7 +16,10 @@ fragment:
     - org.featherweight-ip.protocol-defs.all-rtlsrc
     - ingress-fifo-hdl-top-src
     with:
+      trace: true
       top: [fwvip_common_ingress_fifo_hdl_top]
+      defines:
+      - TRACE_ENABLED
 
   - name: ingress-fifo-hdl-top-sim-run
     uses: hdlsim.vlt.SimRun
