@@ -1,0 +1,12 @@
+
+package:
+  name: org.featherweight-vip.fwvip-common
+
+  tasks:
+  - name: src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      base: src
+      include: "*.sv"
+      incdirs: ["."]

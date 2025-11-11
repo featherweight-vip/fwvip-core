@@ -1,6 +1,11 @@
 
 package:
-  name: svt
+  name: fwvip-common
+
+  dep-sets: 
+  - name: default-dev
+    deps: []
+
 
   paths:
     project: {}
