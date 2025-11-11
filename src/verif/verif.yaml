@@ -22,3 +22,25 @@ fragment:
     uses: hdlsim.vlt.SimRun
     needs:
     - ingress-fifo-hdl-top-sim-img
+
+  # Egress FIFO HDL TB
+  - name: egress-fifo-hdl-top-src
+    uses: std.FileSet
+    with:
+      base: tb
+      type: systemVerilogSource
+      include: fwvip_common_egress_fifo_hdl_top.sv
+
+  - name: egress-fifo-hdl-top-sim-img
+    uses: hdlsim.vlt.SimImage
+    needs:
+    - src
+    - org.featherweight-ip.protocol-defs.all-rtlsrc
+    - egress-fifo-hdl-top-src
+    with:
+      top: [fwvip_common_egress_fifo_hdl_top]
+
+  - name: egress-fifo-hdl-top-sim-run
+    uses: hdlsim.vlt.SimRun
+    needs:
+    - egress-fifo-hdl-top-sim-img
