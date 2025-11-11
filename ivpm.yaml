@@ -1,4 +1,3 @@
-
 package:
   name: fwvip-common
 
@@ -6,9 +5,3 @@ package:
   - name: default-dev
     deps: []
 
-
-  paths:
-    project: {}
-    export: 
-      lib-dirs:
-      - src
