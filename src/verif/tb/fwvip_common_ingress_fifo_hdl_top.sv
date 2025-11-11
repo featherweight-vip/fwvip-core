@@ -27,6 +27,7 @@ module fwvip_common_ingress_fifo_hdl_top;
         reset = 1'b0;
     end
 
+`ifdef FWVIP_TB_DEBUG
     // Clock monitor
     int clk_cnt;
     initial clk_cnt = 0;
@@ -37,7 +38,6 @@ module fwvip_common_ingress_fifo_hdl_top;
         end
     end
 
-
     // Debug reset monitor
     initial begin
         $display("[%0t] reset init=%0b", $time, reset);
@@ -46,6 +46,7 @@ module fwvip_common_ingress_fifo_hdl_top;
             $display("[%0t] reset change -> %0b", $time, reset);
         end
     end
+`endif
 
 
     // ------------------------------------------------------------------------
@@ -77,7 +78,9 @@ module fwvip_common_ingress_fifo_hdl_top;
 
     task automatic set_ready_mode(ready_mode_t m);
         ready_mode = m;
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] Set ready_mode=%0d", $time, ready_mode);
+`endif
     endtask
 
     int burst_cnt;
@@ -118,20 +121,36 @@ module fwvip_common_ingress_fifo_hdl_top;
     logic [WIDTH-1:0] exp_q[$];
     int mirror_count; // mirrors FIFO occupancy from pushes/pops observed via handshake
 
-    // Pop monitor
-    always @(posedge clock) begin
-        if (!reset && i_valid && i_ready) begin
-            if (exp_q.size() == 0) begin
-                $error("[%0t] POP with empty expect queue", $time);
-                $finish;
+
+    // Handshake monitor with one-cycle pipeline to avoid race with DUT updates
+    logic                i_valid_q, i_ready_q;
+    logic [WIDTH-1:0]    i_dat_q;
+    always @(posedge clock or posedge reset) begin
+        if (reset) begin
+            i_valid_q <= 1'b0;
+            i_ready_q <= 1'b0;
+            i_dat_q   <= '0;
+        end else begin
+            // Process handshake from previous cycle using captured data
+            if (i_valid_q && i_ready_q) begin
+                if (exp_q.size() == 0) begin
+                    $error("[%0t] POP with empty expect queue", $time);
+                    $finish;
+                end
+                if (i_dat_q !== exp_q[0]) begin
+                    $error("[%0t] Data mismatch: got=%0h exp=%0h", $time, i_dat_q, exp_q[0]);
+                    $finish;
+                end
+                exp_q.pop_front();
+                mirror_count--;
+`ifdef FWVIP_TB_DEBUG
+                $display("[%0t] POP %0h count=%0d remaining=%0d", $time, i_dat_q, mirror_count, exp_q.size());
+`endif
             end
-            if (i_dat !== exp_q[0]) begin
-                $error("[%0t] Data mismatch: got=%0h exp=%0h", $time, i_dat, exp_q[0]);
-                $finish;
-            end
-            exp_q.pop_front();
-            mirror_count--;
-            $display("[%0t] POP %0h count=%0d remaining=%0d", $time, i_dat, mirror_count, exp_q.size());
+            // Capture current values for next cycle
+            i_valid_q <= i_valid;
+            i_ready_q <= i_ready;
+            i_dat_q   <= i_dat;
         end
     end
 
@@ -140,21 +159,29 @@ module fwvip_common_ingress_fifo_hdl_top;
     // Calls the interface's blocking put()
     // ------------------------------------------------------------------------
     task automatic put_seq(int unsigned n);
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] put_seq start n=%0d", $time, n);
+`endif
         for (int j = 0; j < n; j++) begin
             logic [WIDTH-1:0] data = $urandom;
+`ifdef FWVIP_TB_DEBUG
             $display("[%0t] put_seq j=%0d issue put data=%0h count=%0d", $time, j, data, mirror_count);
+`endif
             ingress_if.put(data); // blocks until space & acceptance
             exp_q.push_back(data);
             mirror_count++;
+`ifdef FWVIP_TB_DEBUG
             $display("[%0t] PUSH %0h count=%0d queued=%0d", $time, data, mirror_count, exp_q.size());
-            if (mirror_count > DEPTH) begin
-                // Should not happen (interface enforces capacity)
+`endif
+            // Note: allow transient mirror_count=DEPTH+1 when push and pop occur in same cycle
+            if (mirror_count > (DEPTH+1)) begin
                 $error("[%0t] Mirror occupancy overflow mirror_count=%0d DEPTH=%0d", $time, mirror_count, DEPTH);
                 $finish;
             end
         end
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] put_seq end n=%0d", $time, n);
+`endif
     endtask
 
     // Wait for drain (empty expect and mirror_count zero)
@@ -168,45 +195,65 @@ module fwvip_common_ingress_fifo_hdl_top;
     // Individual Tests
     // ------------------------------------------------------------------------
     task automatic test_basic();
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] BEGIN test_basic", $time);
+`endif
         set_ready_mode(READY_ALWAYS);
         put_seq(DEPTH);         // fill
         wait_drain();           // drain
         put_seq(DEPTH*2);       // overfill cycles (wrap checks)
         wait_drain();
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] END test_basic", $time);
+`endif
     endtask
 
     task automatic test_random_ready();
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] BEGIN test_random_ready", $time);
+`endif
         set_ready_mode(READY_RANDOM);
         put_seq(DEPTH*3);
         wait_drain();
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] END test_random_ready", $time);
+`endif
     endtask
 
     task automatic test_burst_backpressure();
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] BEGIN test_burst_backpressure", $time);
+`endif
         set_ready_mode(READY_BURST);
         put_seq(DEPTH*3);
         wait_drain();
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] END test_burst_backpressure", $time);
+`endif
     endtask
 
     // ------------------------------------------------------------------------
     // Top-level test sequence
     // ------------------------------------------------------------------------
     initial begin
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] TB start", $time);
+`endif
         mirror_count = 0;
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] Waiting for reset deassert (negedge)", $time);
+`endif
         // Wait for reset deassert; avoid time-0 race by waiting a clock first
         @(posedge clock);
         if (reset) begin
+`ifdef FWVIP_TB_DEBUG
             $display("[%0t] Reset asserted; waiting for deassert...", $time);
+`endif
             @(negedge reset);
         end
+`ifdef FWVIP_TB_DEBUG
         $display("[%0t] Reset deasserted", $time);
+`endif
         // Run tests
         test_basic();
         test_random_ready();
