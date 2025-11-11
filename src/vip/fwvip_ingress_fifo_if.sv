@@ -58,6 +58,9 @@ interface fwvip_ingress_fifo_if #(
             for (ii = 0; ii < DEPTH; ii = ii + 1) begin
                 fifo[ii] <= '0;
             end
+            // Default outputs
+            put_gnt <= 1'b0;
+
         end else begin
             put_gnt <= 1'b0;
 
@@ -98,11 +101,22 @@ interface fwvip_ingress_fifo_if #(
         // Present request and hold until granted
         put_data = data;
         put_req  = 1'b1;
-        // Wait for acceptance pulse (detect directly to avoid NBA race)
-        @(posedge clock); // align to clock first to avoid time-0 gnt issues
+        // Wait until a clock edge where acceptance is asserted
         do @(posedge clock); while (!put_gnt);
         // Deassert request after acceptance
         put_req  = 1'b0;
     endtask
+
+    // Debug: monitor puts/pops
+    `ifdef FWVIP_DEBUG
+    always @(posedge clock) begin
+        if (!reset) begin
+            if (put_req) $display("[%0t] IF put_req data=%0h count=%0d", $time, put_data, count);
+            if (put_gnt) $display("[%0t] IF put_gnt accepted data=%0h wr_ptr=%0d count_next=%0d", $time, put_data, wr_ptr, count + 1);
+            if (pop_do) $display("[%0t] IF pop_do rd_ptr=%0d dat=%0h count_next=%0d", $time, rd_ptr, i_dat, count - 1);
+        end
+    end
+    `endif
+
 
 endinterface
