@@ -3,5 +3,12 @@ package:
 
   dep-sets: 
   - name: default-dev
-    deps: []
+    deps: 
+    - name: dv-flow-mgr
+      url: http://github.com/dv-flow/dv-flow-mgr.git
+    - name: dv-flow-libhdlsim
+      url: http://github.com/dv-flow/dv-flow-libhdlsim.git
+    - name: fwprotocol-defs
+      url: http://github.com/featherweight-ip/fwprotocol-defs.git
+
 

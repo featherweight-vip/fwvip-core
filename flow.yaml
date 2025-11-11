@@ -2,11 +2,18 @@
 package:
   name: org.featherweight-vip.fwvip-common
 
+  imports:
+  - "${{ rootdir }}/packages/fwprotocol-defs/flow.yaml"
+
   tasks:
   - name: src
     uses: std.FileSet
     with:
       type: systemVerilogSource
-      base: src
+      base: src/vip
       include: "*.sv"
       incdirs: ["."]
+  
+  fragments:
+  - src/verif/verif.yaml
+

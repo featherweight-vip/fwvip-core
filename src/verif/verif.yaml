@@ -1,0 +1,24 @@
+
+fragment: 
+  tasks:
+  - name: ingress-fifo-hdl-top-src
+    uses: std.FileSet
+    with:
+      base: tb
+      type: systemVerilogSource
+      include: fwvip_common_ingress_fifo_hdl_top.sv
+
+
+  - name: ingress-fifo-hdl-top-sim-img
+    uses: hdlsim.vlt.SimImage
+    needs:
+    - src
+    - org.featherweight-ip.protocol-defs.all-rtlsrc
+    - ingress-fifo-hdl-top-src
+    with:
+      top: [fwvip_common_ingress_fifo_hdl_top]
+
+  - name: ingress-fifo-hdl-top-sim-run
+    uses: hdlsim.vlt.SimRun
+    needs:
+    - ingress-fifo-hdl-top-sim-img

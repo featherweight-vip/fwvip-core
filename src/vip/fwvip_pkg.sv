@@ -1,4 +1,5 @@
 
+`timescale 1ns/1ps
 package fwvip_pkg;
 
 typedef enum {
