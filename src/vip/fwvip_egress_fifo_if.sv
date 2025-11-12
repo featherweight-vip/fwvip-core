@@ -21,9 +21,9 @@ interface fwvip_egress_fifo_if #(
     logic ready_drv;
     assign e_ready = ready_drv;
 
-    // Initialize
+    // Initialize: keep ready asserted so producers can handshake next cycle
     initial begin
-        ready_drv = 1'b1; // Always ready after time 0
+        ready_drv = 1'b1;
     end
 
 
@@ -37,15 +37,11 @@ interface fwvip_egress_fifo_if #(
      * Asserts ready while waiting. Deasserts after the item is captured.
      */
     task automatic get(output reg [WIDTH-1:0] data);
-        // Assert ready and wait until a valid is present (while out of reset)
-        ready_drv = 1'b1;
-        // Wait for reset deassertion if needed
+        // Ready is held asserted; wait until a valid is present (while out of reset)
         if (reset) @(negedge reset);
         // Wait for a clock edge where a handshake occurs
         do @(posedge clock); while (!(e_valid && e_ready));
         data = e_dat;
-        // Deassert ready after capturing the item
-        ready_drv = 1'b0;
     endtask
 
 endinterface
