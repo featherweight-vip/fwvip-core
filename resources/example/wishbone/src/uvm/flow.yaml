@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+fragment:
+  name: uvm
+
+  tasks:
+  - export: uvm-pkg
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_pkg.sv
+      incdirs:
+      - ${{ srcdir }}
+    needs:
+    - hdlsim.vlt.SimLibUVM
+    - org.featherweight-vip.wishbone.src.initiator-sv
+    - org.featherweight-vip.wishbone.src.target-sv
+    - org.featherweight-vip.wishbone.src.monitor-sv

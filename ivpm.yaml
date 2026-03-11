@@ -10,10 +10,15 @@ package:
       url: http://github.com/dv-flow/dv-flow-libhdlsim.git
     - name: dv-flow-libformal
       url: http://github.com/dv-flow/dv-flow-libformal.git
-#    - name: fwprotocol-defs
-#      url: http://github.com/featherweight-ip/fwprotocol-defs.git
+    - name: pyhdl-if
+      url: https://github.com/fvutils/pyhdl-if.git
     - name: symbiyosys-bin
       url: https://github.com/edapack/symbiyosys-bin
+      cache: true
+      src: gh-rls
+      prerelease: true
+    - name: verilator
+      url: https://github.com/edapack/verilator-bin
       cache: true
       src: gh-rls
       prerelease: true

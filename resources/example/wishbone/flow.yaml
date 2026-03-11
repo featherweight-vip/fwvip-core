@@ -12,4 +12,5 @@ package:
 
   fragments:
   - src/sv/flow.yaml
+  - src/uvm/flow.yaml
 

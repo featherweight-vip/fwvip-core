@@ -48,3 +48,104 @@ fragment:
       type: systemVerilogSource
       include: [b2b_sv_tb.sv]
 
+  # ---- UVM back-to-back simulation image (shared by both UVM tests) ----
+  - local: b2b-uvm-img
+    uses: hdlsim.vlt.SimImage
+    with:
+      top: [b2b_uvm_tb]
+    needs:
+    - org.featherweight-vip.wishbone.src.initiator-core
+    - org.featherweight-vip.wishbone.src.initiator-sv
+    - org.featherweight-vip.wishbone.src.target-core
+    - org.featherweight-vip.wishbone.src.target-sv
+    - org.featherweight-vip.wishbone.src.monitor-core
+    - org.featherweight-vip.wishbone.src.monitor-sv
+    - org.featherweight-vip.wishbone.src.checker
+    - org.featherweight-vip.wishbone.uvm.uvm-pkg
+    - hdlsim.vlt.SimLibUVM
+    - b2b-uvm-tests-pkg
+    - b2b-uvm-src
+
+  # Test classes package (compiled before the top-level TB module)
+  - local: b2b-uvm-tests-pkg
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [fwvip_wb_b2b_tests_pkg.sv]
+      incdirs:
+      - ${{ srcdir }}
+
+  - local: b2b-uvm-src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [b2b_uvm_tb.sv]
+      incdirs:
+      - ${{ srcdir }}
+
+  # 4 fixed writes + 4 reads, checks data values and monitor count
+  - root: b2b-uvm-directed
+    uses: hdlsim.vlt.SimRun
+    needs: [b2b-uvm-img]
+    with:
+      plusargs:
+      - UVM_TESTNAME=fwvip_wb_b2b_directed_test
+
+  # 8 fixed writes + reads, checks data values and monitor count
+  - root: b2b-uvm-rand
+    uses: hdlsim.vlt.SimRun
+    needs: [b2b-uvm-img]
+    with:
+      plusargs:
+      - UVM_TESTNAME=fwvip_wb_b2b_rand_test
+
+  # ---- Reactive target (handler-sequence) tests ----
+  - local: b2b-targ-uvm-img
+    uses: hdlsim.vlt.SimImage
+    with:
+      top: [b2b_targ_uvm_tb]
+    needs:
+    - org.featherweight-vip.wishbone.src.initiator-core
+    - org.featherweight-vip.wishbone.src.initiator-sv
+    - org.featherweight-vip.wishbone.src.target-core
+    - org.featherweight-vip.wishbone.src.target-sv
+    - org.featherweight-vip.wishbone.src.monitor-core
+    - org.featherweight-vip.wishbone.src.monitor-sv
+    - org.featherweight-vip.wishbone.src.checker
+    - org.featherweight-vip.wishbone.uvm.uvm-pkg
+    - hdlsim.vlt.SimLibUVM
+    - b2b-targ-uvm-tests-pkg
+    - b2b-targ-uvm-src
+
+  - local: b2b-targ-uvm-tests-pkg
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [fwvip_wb_b2b_targ_tests_pkg.sv]
+      incdirs:
+      - ${{ srcdir }}
+
+  - local: b2b-targ-uvm-src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [b2b_targ_uvm_tb.sv]
+      incdirs:
+      - ${{ srcdir }}
+
+  # 4 writes + 4 reads via reactive target handler sequence
+  - root: b2b-targ-uvm
+    uses: hdlsim.vlt.SimRun
+    needs: [b2b-targ-uvm-img]
+    with:
+      plusargs:
+      - UVM_TESTNAME=fwvip_wb_b2b_targ_test
+
+  # 12 randomized writes + 12 reads via reactive target handler sequence
+  - root: b2b-targ-uvm-rand
+    uses: hdlsim.vlt.SimRun
+    needs: [b2b-targ-uvm-img]
+    with:
+      plusargs:
+      - UVM_TESTNAME=fwvip_wb_b2b_targ_rand_test
+

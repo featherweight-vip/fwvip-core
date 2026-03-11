@@ -1,21 +1,20 @@
 /**
  * fwvip_wb_target_sv — SV wrapper for the Wishbone target BFM.
  *
- * Exposes Wishbone B.3 target signals on the module boundary.
- * The class-based testbench obtains a single virtual handle to bfm_if:
- *
- *   virtual fwvip_wb_target_if #() vif = tb.u_target.bfm_if;
- *   vif.req_put({addr, data, we});   // inject a request
- *   vif.rsp_get(rsp);                // collect a response
+ * When REACTIVE=0 (default) the core uses its internal memory model.
+ * When REACTIVE=1 the core operates in handler-sequence mode: it pushes
+ * observed bus requests to bfm_if.req_fifo and waits for responses
+ * injected via bfm_if.rsp_fifo.  Use with the fwvip_wb_targ_agent.
  */
 `include "fwvip_wb_macros.svh"
 
 module fwvip_wb_target_sv #(
-        parameter int ADDR_WIDTH = 32,
-        parameter int DATA_WIDTH = 32,
-        parameter int MEM_SIZE   = 256,
-        parameter int _REQ_WIDTH = `FWVIP_WB_REQ_WIDTH(ADDR_WIDTH, DATA_WIDTH),
-        parameter int _RSP_WIDTH = `FWVIP_WB_RSP_WIDTH(ADDR_WIDTH, DATA_WIDTH)
+        parameter int  ADDR_WIDTH = 32,
+        parameter int  DATA_WIDTH = 32,
+        parameter int  MEM_SIZE   = 256,
+        parameter bit  REACTIVE   = 1'b0,
+        parameter int  _REQ_WIDTH = `FWVIP_WB_REQ_WIDTH(ADDR_WIDTH, DATA_WIDTH),
+        parameter int  _RSP_WIDTH = `FWVIP_WB_RSP_WIDTH(ADDR_WIDTH, DATA_WIDTH)
     ) (
         input                           clock,
         input                           reset,
@@ -32,7 +31,7 @@ module fwvip_wb_target_sv #(
         output [DATA_WIDTH-1:0]         dat_r
     );
 
-    // Aggregating interface with inline FIFO logic and put/get tasks.
+    // Aggregating interface with inline FIFO logic and req_get/rsp_put tasks.
     fwvip_wb_target_if #(
         .ADDR_WIDTH (ADDR_WIDTH),
         .DATA_WIDTH (DATA_WIDTH)
@@ -45,7 +44,8 @@ module fwvip_wb_target_sv #(
     fwvip_wb_target_core #(
         .ADDR_WIDTH (ADDR_WIDTH),
         .DATA_WIDTH (DATA_WIDTH),
-        .MEM_SIZE   (MEM_SIZE)
+        .MEM_SIZE   (MEM_SIZE),
+        .REACTIVE   (REACTIVE)
     ) core (
         .clock     (clock),
         .reset     (reset),
