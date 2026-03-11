@@ -1,19 +1,22 @@
 
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
 package:
-  name: org.featherweight-vip.fwvip-common
+  name: org.fwvip.common
 
-  imports:
-  - "${{ rootdir }}/packages/fwprotocol-defs/flow.yaml"
+#  imports:
+#  - "${{ rootdir }}/packages/fwprotocol-defs/flow.yaml"
 
-  tasks:
-  - name: src
-    uses: std.FileSet
-    with:
-      type: systemVerilogSource
-      base: src/vip
-      include: "*.sv"
-      incdirs: ["."]
+  # tasks:
+  # - name: src
+  #   uses: std.FileSet
+  #   with:
+  #     type: systemVerilogSource
+  #     base: src/vip
+  #     include: "*.sv"
+  #     incdirs: ["."]
   
   fragments:
-  - src/verif/verif.yaml
+  - src/sv/flow.yaml
+  - tests/flow.yaml
 

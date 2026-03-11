@@ -1,0 +1,22 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+fragment:
+  tasks:
+  - export: ingress-fifo
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_sv_ingress_fifo.sv
+      incdirs:
+      - ${{ srcdir }}
+
+  - export: egress-fifo
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_sv_egress_fifo.sv
+      incdirs:
+      - ${{ srcdir }}

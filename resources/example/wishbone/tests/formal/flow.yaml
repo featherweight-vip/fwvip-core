@@ -1,0 +1,32 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+fragment:
+  name: formal
+
+  tasks:
+  # Prepend the system sby installation (provides sby, boolector, yosys-smtbmc)
+  - local: sby-path
+    uses: std.SetEnv
+    with:
+      prepend_path:
+        PATH: /tools/symbiyosys/20251115/bin
+
+  # BMC proof: initiator + target back-to-back, monitored by fwvip_wb_checker
+  - root: wb-b2b-bmc
+    uses: formal.sby.BMC
+    with:
+      top: fwvip_wb_formal_b2b_tb
+      depth: 20
+    needs:
+    - org.featherweight-vip.wishbone.src.initiator-core
+    - org.featherweight-vip.wishbone.src.target-core
+    - org.featherweight-vip.wishbone.src.checker
+    - wb-b2b-formal-src
+    - sby-path
+
+  - local: wb-b2b-formal-src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [fwvip_wb_formal_b2b_tb.sv]

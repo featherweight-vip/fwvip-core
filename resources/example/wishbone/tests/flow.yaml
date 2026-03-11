@@ -1,0 +1,25 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+package:
+  name: org.featherweight-vip.wishbone.tests
+
+  imports:
+  - ${{ rootdir }}/../flow.yaml # Import VIP
+
+  configs:
+  - name: debug
+    tasks:
+    - name: SimDebugDefs
+      uses: std.FileSet
+      feeds: [hdlsim.vlt.SimImage]
+      with: {type: systemVerilogSource, defines: [DEBUG=1]}
+    - name: SimDebugOpts
+      feeds: [sim.b2b]
+      uses: hdlsim.SimCompileArgs
+      with:
+        args: [--trace-fst]
+
+  fragments:
+  - sim/flow.yaml
+  - formal/flow.yaml
