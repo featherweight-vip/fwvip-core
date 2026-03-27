@@ -149,3 +149,10 @@ fragment:
       plusargs:
       - UVM_TESTNAME=fwvip_wb_b2b_targ_rand_test
 
+  # Mixed successful and errored reads via reactive target handler sequence
+  - root: b2b-targ-uvm-err
+    uses: hdlsim.vlt.SimRun
+    needs: [b2b-targ-uvm-img]
+    with:
+      plusargs:
+      - UVM_TESTNAME=fwvip_wb_b2b_targ_err_test

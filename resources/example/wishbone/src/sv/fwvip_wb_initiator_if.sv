@@ -57,11 +57,11 @@ interface fwvip_wb_initiator_if #(
         .ready (rsp_ready)
     );
 
-    task req_put(bit [_REQ_WIDTH-1:0] data);
+    task static req_put(bit [_REQ_WIDTH-1:0] data);
         req_fifo.put(data);
     endtask
 
-    task rsp_get(output bit [_REQ_WIDTH-1:0] data);
+    task static rsp_get(output bit [_REQ_WIDTH-1:0] data);
         rsp_fifo.get(data);
     endtask
 

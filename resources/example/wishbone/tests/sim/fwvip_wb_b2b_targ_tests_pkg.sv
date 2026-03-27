@@ -9,5 +9,6 @@ package fwvip_wb_b2b_targ_tests_pkg;
   `include "fwvip_wb_b2b_targ_env.svh"
   `include "fwvip_wb_b2b_targ_test.svh"
   `include "fwvip_wb_b2b_targ_rand_test.svh"
+  `include "fwvip_wb_b2b_targ_err_test.svh"
 
 endpackage

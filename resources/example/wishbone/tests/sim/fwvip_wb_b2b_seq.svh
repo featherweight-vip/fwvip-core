@@ -49,6 +49,35 @@ class fwvip_wb_read_seq extends uvm_sequence #(fwvip_wb_seq_item);
 
 endclass
 
+// Read a list of addresses and capture both returned data and error status.
+class fwvip_wb_read_status_seq extends uvm_sequence #(fwvip_wb_seq_item);
+  `uvm_object_utils(fwvip_wb_read_status_seq)
+
+  bit [FWVIP_WB_ADDR_WIDTH_MAX-1:0] addrs[];
+  bit [FWVIP_WB_DATA_WIDTH_MAX-1:0] read_data[];
+  bit                               read_err[];
+
+  function new(string name = "fwvip_wb_read_status_seq");
+    super.new(name);
+  endfunction
+
+  task body();
+    fwvip_wb_seq_item item;
+    read_data = new[addrs.size()];
+    read_err  = new[addrs.size()];
+    foreach (addrs[i]) begin
+      item = fwvip_wb_seq_item::type_id::create("item");
+      start_item(item);
+      item.adr = addrs[i];
+      item.we  = 1'b0;
+      finish_item(item);
+      read_data[i] = item.rsp_dat;
+      read_err[i]  = item.rsp_err;
+    end
+  endtask
+
+endclass
+
 // Write n_ops items with sequential word-aligned addresses and randomised data.
 // Captures written addresses and data for post-sequence verification.
 class fwvip_wb_rand_wr_seq extends uvm_sequence #(fwvip_wb_seq_item);

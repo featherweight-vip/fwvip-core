@@ -131,10 +131,10 @@ module fwvip_wb_target_core #(
 
                     ST_WAIT_RSP: begin
                         if (rsp_valid) begin
-                            // Consume the response; drive ack + dat_r for one cycle
+                            // Consume the response; terminate with either ACK or ERR.
                             rsp_ready <= 1'b1;
-                            ack       <= 1'b1;
                             // RSP_STRUCT packed: {dat[DATA_WIDTH-1:0], err}
+                            ack       <= !rsp_data[0];
                             dat_r     <= rsp_data[_RSP_WIDTH-1:1];
                             err       <= rsp_data[0];
                             state     <= ST_IDLE;
