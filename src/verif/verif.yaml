@@ -12,7 +12,7 @@ fragment:
   - name: ingress-fifo-hdl-top-sim-img
     uses: hdlsim.vlt.SimImage
     needs:
-    - src
+    - src-hvl
     - org.featherweight-ip.protocol-defs.all-rtlsrc
     - ingress-fifo-hdl-top-src
     with:
@@ -37,7 +37,7 @@ fragment:
   - name: egress-fifo-hdl-top-sim-img
     uses: hdlsim.vlt.SimImage
     needs:
-    - src
+    - src-hvl
     - org.featherweight-ip.protocol-defs.all-rtlsrc
     - egress-fifo-hdl-top-src
     with:

@@ -48,7 +48,7 @@ interface fwvip_ingress_fifo_if #(
 
     // Synchronous FIFO control
     integer ii;
-    always_ff @(posedge clock or posedge reset) begin
+    always @(posedge clock or posedge reset) begin
         if (reset) begin
             rd_ptr  <= '0;
             wr_ptr  <= '0;
@@ -102,7 +102,10 @@ interface fwvip_ingress_fifo_if #(
         put_data = data;
         put_req  = 1'b1;
         // Wait until a clock edge where acceptance is asserted
-        do @(posedge clock); while (!put_gnt);
+        do @(posedge clock) begin
+            // Note: Verilator (5.040) doesn't like empty while loops
+            put_req = 1'b1; 
+        end while (!put_gnt);
         // Deassert request after acceptance
         put_req  = 1'b0;
     endtask

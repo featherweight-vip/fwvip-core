@@ -6,8 +6,15 @@ package:
   - "${{ rootdir }}/packages/fwprotocol-defs/flow.yaml"
 
   tasks:
-  - name: src
+  - name: src-hdl
     uses: std.FileSet
+    with:
+      type: verilogIncDir
+      base: src/vip
+
+  - name: src-hvl
+    uses: std.FileSet
+    needs: [src-hdl]
     with:
       type: systemVerilogSource
       base: src/vip
