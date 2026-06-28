@@ -1,0 +1,42 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+fragment:
+  name: fifo-sim
+
+  tasks:
+  - local: ingress-fifo-img
+    uses: hdlsim.vlt.SimImage
+    with:
+      top: [ingress_fifo_tb]
+    needs:
+    - org.fwvip.common.ingress-fifo
+    - ingress-fifo-tb-src
+
+  - root: ingress-fifo-sim
+    uses: hdlsim.vlt.SimRun
+    needs: [ingress-fifo-img]
+
+  - local: ingress-fifo-tb-src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [ingress_fifo_tb.sv]
+
+  - local: egress-fifo-img
+    uses: hdlsim.vlt.SimImage
+    with:
+      top: [egress_fifo_tb]
+    needs:
+    - org.fwvip.common.egress-fifo
+    - egress-fifo-tb-src
+
+  - root: egress-fifo-sim
+    uses: hdlsim.vlt.SimRun
+    needs: [egress-fifo-img]
+
+  - local: egress-fifo-tb-src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [egress_fifo_tb.sv]

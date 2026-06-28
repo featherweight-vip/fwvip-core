@@ -1,0 +1,16 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+package:
+  name: org.featherweight-vip.wishbone
+
+  imports:
+  - ${{ srcdir }}/../../../flow.yaml # Import fwvip-common
+
+  tasks:
+  - root: 
+
+  fragments:
+  - src/sv/flow.yaml
+  - src/uvm/flow.yaml
+

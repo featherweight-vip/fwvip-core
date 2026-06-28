@@ -1,0 +1,78 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+fragment:
+  name: src
+
+  tasks:
+  - export: initiator-core
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: 
+      - fwvip_wb_initiator_core.sv
+      incdirs: 
+      - ${{ srcdir }}
+
+  - export: target-core
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_target_core.sv
+      incdirs:
+      - ${{ srcdir }}
+
+  - export: checker
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_checker.sv
+
+  - export: monitor-core
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_monitor_core.sv
+      incdirs:
+      - ${{ srcdir }}
+
+  - export: initiator-sv
+    uses: std.FileSet
+    needs:
+    - org.fwvip.common.ingress-fifo
+    - org.fwvip.common.egress-fifo
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_initiator_if.sv
+      - fwvip_wb_initiator_sv.sv
+      incdirs:
+      - ${{ srcdir }}
+
+  - export: target-sv
+    uses: std.FileSet
+    needs:
+    - org.fwvip.common.ingress-fifo
+    - org.fwvip.common.egress-fifo
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_target_if.sv
+      - fwvip_wb_target_sv.sv
+      incdirs:
+      - ${{ srcdir }}
+
+  - export: monitor-sv
+    uses: std.FileSet
+    needs:
+    - org.fwvip.common.egress-fifo
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_wb_monitor_if.sv
+      - fwvip_wb_monitor_sv.sv
+      incdirs:
+      - ${{ srcdir }}
