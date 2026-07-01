@@ -10,7 +10,7 @@ fragment:
     with:
       top: [ingress_fifo_tb]
     needs:
-    - org.fwvip.common.ingress-fifo
+    - org.fwvip.core.ingress-fifo
     - ingress-fifo-tb-src
 
   - root: ingress-fifo-sim
@@ -28,7 +28,7 @@ fragment:
     with:
       top: [egress_fifo_tb]
     needs:
-    - org.fwvip.common.egress-fifo
+    - org.fwvip.core.egress-fifo
     - egress-fifo-tb-src
 
   - root: egress-fifo-sim
@@ -40,3 +40,36 @@ fragment:
     with:
       type: systemVerilogSource
       include: [egress_fifo_tb.sv]
+
+  # ---- UVM clock/reset config tests ----
+  - local: clkrst-uvm-img
+    uses: hdlsim.vlt.SimImage
+    with:
+      top: [clkrst_uvm_tb]
+    needs:
+    - hdlsim.vlt.SimLibUVM
+    - org.fwvip.core.clock-reset-xtor
+    - org.fwvip.core.core-uvm-pkg
+    - clkrst-uvm-tests-pkg
+    - clkrst-uvm-tb-src
+
+  - local: clkrst-uvm-tests-pkg
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [fwvip_core_clkrst_tests_pkg.sv]
+      incdirs: [ "${{ srcdir }}" ]
+
+  - local: clkrst-uvm-tb-src
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include: [clkrst_uvm_tb.sv]
+      incdirs: [ "${{ srcdir }}" ]
+
+  - root: clkrst-uvm-sim
+    uses: hdlsim.vlt.SimRun
+    needs: [clkrst-uvm-img]
+    with:
+      plusargs:
+      - UVM_TESTNAME=fwvip_core_clkrst_test

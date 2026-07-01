@@ -1,0 +1,21 @@
+
+# yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
+
+fragment:
+
+  tasks:
+  # UVM methodology layer for the core clock/reset transactors. Compiles
+  # fwvip_core_uvm_pkg (clock/reset config objects), which imports the plain-SV
+  # fwvip_core_pkg (abstract APIs). incdirs pull in the config .svh (this dir)
+  # and the interface-class APIs (../sv).
+  - export: core-uvm-pkg
+    uses: std.FileSet
+    needs:
+    - core-pkg
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_core_uvm_pkg.sv
+      incdirs:
+      - ${{ srcdir }}
+      - ${{ srcdir }}/../sv

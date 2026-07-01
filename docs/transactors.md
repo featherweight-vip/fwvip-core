@@ -1,10 +1,28 @@
-Transactor / Bus Functional Model structure
+# Transactors
 
-- Core
-  - Initiator core: fwvip_wb_initiator_core with RV target port req_ and RV initiator port rsp_; drives Wishbone master signals; single outstanding transfer; simple IDLE/BUS/RESP FSM.
-  - Target core: fwvip_wb_target_core with RV initiator port req_ and RV target port rsp_; observes Wishbone slave signals, emits a request, accepts a response, then asserts ACK/ERR.
-  - Request vector packs adr, dat_w, byte-enables, we; response vector packs dat_r, err.
-- Methodology wrapper
-  - Driver BFM: fwvip_wb_driver_bfm binds to the protocol interface, implements configure(), initiate_and_get_response(), respond_and_wait_for_next_transfer(); bridges between transaction structs and pins; proxies to a UVM driver.
-  - Monitor BFM: fwvip_wb_monitor_bfm provides start_monitoring() and do_monitor(); captures a transaction struct and notifies the UVM monitor via a proxy callback.
-- Monitor role is always passive and never drives pins.
+## Protocol transactors live in the kit
+
+The signal-level **protocol** transactors (initiator / target / monitor) — cores that
+convert ready/valid ("FIFO") streams to bus pins, their SV interfaces, wrappers, method-API
+bridges, and the protocol checker — are **not** part of `fwvip-core`. They live in the
+per-protocol transactor kit `fw-proto-<proto>` and are built by the `fw-proto-create` skill.
+See that kit's documentation for the core FSMs, the RV request/response/monitor vector
+packing, and the bridge classes the VIP consumes.
+
+## Clock / reset transactors (provided here)
+
+`fwvip-core` provides the timing transactors every VIP needs:
+
+- **`fwvip_clock_xtor_if`** — exposes the clock to the methodology layer via the abstract
+  `fwvip_clock_if` API.
+- **`fwvip_reset_xtor_if #(.ACTIVE())`** — exposes reset state via `fwvip_reset_if` /
+  `fwvip_wait_reset_if` (notably `wait_reset()`), so a VIP env can synchronize to reset
+  deassertion instead of using a fixed delay.
+
+These signal-level interfaces are adapted to UVM through the config providers in
+`fwvip_core_uvm_pkg` (`fwvip_clock_config` / `fwvip_reset_config`): the bench instantiates
+the interfaces, sets the providers into the config DB, and the env retrieves them.
+
+## Monitor role
+
+The monitor role (in any kit) is always **passive** and never drives pins.

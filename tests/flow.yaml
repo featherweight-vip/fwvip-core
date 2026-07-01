@@ -2,10 +2,9 @@
 # yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
 
 fragment:
-  name: tests
-
-#  imports:
-#  - ${{ rootdir }}/../flow.yaml
+  # Unique name: this package is imported into larger builds (e.g. fwvip-wb),
+  # where dfm requires fragment names to be globally unique.
+  name: core-tests
 
   fragments:
   - sim/flow.yaml

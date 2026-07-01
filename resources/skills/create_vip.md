@@ -1,388 +1,465 @@
-# Creating a New VIP with fwvip-common
+# Creating a New VIP on a fw-proto Transactor
 
-This skill walks an agent through creating a new Verification IP (VIP) using the `fwvip-common` framework. The canonical reference is the Wishbone B.3 example at `resources/example/wishbone/`.
+This skill walks an agent through creating a new **Verification IP (VIP)** — the
+*methodology layer* — on top of an existing `fw-proto-<proto>` transactor kit. Two
+validated VIPs calibrate the patterns below:
 
-## Overview
+- **`fwvip-wb`** — a *synchronous, memory-mapped bus* (Wishbone): request/response,
+  width-parameterized, with a register model.
+- **`fwvip-uart`** — an *asynchronous, streaming line protocol* (UART): independent one-way
+  TX/RX streams, fixed carrier width, runtime-configurable framing, no register model.
 
-A fwvip-common VIP contains:
-- Three transactor cores (initiator, target, monitor) — pure RTL, signal-level only
-- Three SV interfaces (one per transactor) — wrap `fwvip_sv_ingress_fifo` / `fwvip_sv_egress_fifo`
-- Three SV wrapper modules — bind core to interface
-- A protocol checker (`fwvip_*_checker.sv`) — synthesizable assertions for use in simulation and formal
-- Transaction struct macros in a `.svh` header
-- Tests: core-only simulation, SV-wrapper simulation, formal BMC
-- `flow.yaml` files at each directory level for DFM
+They span the range each design axis covers. Describe **your** protocol on its own terms —
+don't force it into a bus or a stream shape because an example has that shape.
+
+## Where this fits — the two layers
+
+| Layer | Package | Built by | Contains |
+|-------|---------|----------|----------|
+| **Transactor kit** | `fw-proto-<proto>` | the **`fw-proto-create`** skill | Signal-level, per-instance transactors (core ↔ pins, in-built FIFOs, blocking task API), a method-level API + per-role bridges, an optional runtime-config API, and a protocol checker. |
+| **VIP / methodology** | `fwvip-<proto>` | **this skill** | A UVM agent set *and* a Python/cocotb front-end built **on top of** the kit. No RTL FSMs, no checker. |
+
+`fwvip-core` supplies shared infrastructure: clock/reset transactors + UVM config providers
+(`fwvip_clock_config` / `fwvip_reset_config`) for reset synchronization, and the canonical
+cocotb ready/valid handshake (`docs/cocotb-performance.md`).
+
+> **Hard prerequisite.** The transactor kit `fw-proto-<proto>` must already exist — the VIP
+> *consumes* it, never rebuilds it. If the kit is missing, build it with **`fw-proto-create`**
+> first. This skill never creates cores, interfaces, wrappers, bridges, or checkers.
+
+### What the VIP consumes from the kit
+
+For each role the kit exports (names: Wishbone `wb_*` / UART `uart_*`):
+
+- **Transactor wrappers** `<proto>_<role>_xtor` — instantiate in the bench. Each holds a
+  `u_if` instance with a **blocking task API** and/or a held-config `configure(...)`.
+- **Transactor cores** `<proto>_<role>_xtor_core` with generic ready/valid ports
+  (`req_*`/`rsp_*`, or role streams like `mon_*`) and discrete `cfg_*` ports for held config
+  — the Python/cocotb backend drives these via instance handles.
+- **Method API + per-role bridges** in the kit SV package `fw_proto_<proto>_pkg`: the
+  interface-classes (`wb_proto_if`; `uart_tx_if`/`uart_rx_if`/`uart_monitor_if`) and the
+  `<proto>_<role>_xtor_bridge` classes that connect the task API to the method API.
+- **Runtime-config API** (if the protocol has one) `<proto>_config_if` — the kit's
+  held-level `configure(...)`.
+- **Protocol checker** module `<proto>_proto_checker` (consume it; don't vendor a copy).
+- **DFM exports** — Wishbone `fw.proto.wb.{xtor-core,xtor-sv,class,checker}`; UART
+  `fw.proto.uart.{files,xtor-core,checker}`.
+
+## The two reference VIPs at a glance
+
+The same skill produces both. Where they differ is **driven by the protocol**, not by taste:
+
+| Axis | `fwvip-wb` (bus) | `fwvip-uart` (stream) |
+|---|---|---|
+| Roles → archetypes | initiator=*driving*, target=*responder*, monitor=*passive* | tx=*driving*, rx=*passive consumer*, monitor=*passive* |
+| Carrier / widths | width-parameterized (`ADDR/DATA_WIDTH_MAX`); `*_config_p #(vif_t, AW, DW)` | fixed carrier (`MAX_DATA_BITS/STATUS_BITS/DIV_WIDTH`); `*_config_p #(vif_t)` |
+| Wire response | yes (read data + err) → **responder model** | none (one-way) → **no responder** |
+| Runtime config | none | framing object (`divisor/word/parity/stop`) → kit `uart_config_if` |
+| Register model | `uvm_reg_adapter` | none (not memory-mapped) |
+| Passive delivery | monitor **polls** `wait_txn()` | rx/monitor **push** via `recv()`/`observe()` callbacks |
 
 ---
 
-## Step 1 — Architecture Plan
-
-Before writing any code, analyze the protocol:
-
-1. **Identify configurable parameters**: signal widths, number of lanes, etc. These become `parameter` declarations on the core modules.
-
-2. **Identify independent activity streams**: e.g., a memory protocol has a request stream and a response stream. A serial protocol abstracts at the word level, not bit level. Each stream will have its own FIFO and its own FSM.
-
-3. **Determine FIFO directions per transactor**:
-   - Initiator: request stream → **ingress FIFO** (testbench pushes in), response stream → **egress FIFO** (testbench reads out)
-   - Target: mirrors the initiator — request stream → **egress FIFO**, response stream → **ingress FIFO**
-   - Monitor: all streams → **egress FIFOs** (passive observer only)
-
-4. **Design transaction structs** for each stream. Use a `packed struct` and a width macro. See `fwvip_wb_macros.svh`:
-   ```sv
-   `define FWVIP_WB_REQ_STRUCT(ADDR_WIDTH, DATA_WIDTH) \
-       struct packed { \
-           bit[ADDR_WIDTH-1:0] adr; \
-           bit[DATA_WIDTH-1:0] dat; \
-           bit                 we;  \
-       }
-   `define FWVIP_WB_REQ_WIDTH(ADDR_WIDTH, DATA_WIDTH) ((ADDR_WIDTH) + (DATA_WIDTH) + 1)
-   ```
-   The width macro must be computable from parameters without `$bits()` — Yosys/sby cannot evaluate `$bits()` on anonymous structs in parameter defaults.
-
-5. **Design one FSM per stream per transactor**. FSMs must be fully independent — no shared state between streams. Benefits: simpler machines, better throughput, natural FIFO buffering.
-
-6. **Identify protocol invariants** (e.g., "CYC must be high while STB is asserted"). These become checker assertions.
-
----
-
-## Step 2 — Directory Layout
-
-Create the following structure (replace `<proto>` with your protocol abbreviation, e.g., `wb` → prefix `fwvip_wb_`):
+## What you'll build (layout)
 
 ```
-resources/example/<proto>/
-  flow.yaml                              # package-level DFM config
+fwvip-<proto>/
+  flow.yaml                              # dfm package org.fwvip.<proto>; imports fw-proto-<proto> + fwvip-core
+  ivpm.yaml                              # deps: fw-proto-<proto>, fwvip-core, cocotb, …
+  skills/fwvip-<proto>-usage/SKILL.md    # agent-facing "how to use this VIP" skill (Step 12)
   src/
-    sv/
-      flow.yaml                          # fragment: exports for each core/interface/wrapper
-      fwvip_<proto>_macros.svh           # transaction struct + width macros
-      fwvip_<proto>_initiator_core.sv    # pure-RTL initiator core
-      fwvip_<proto>_target_core.sv       # pure-RTL target core
-      fwvip_<proto>_monitor_core.sv      # pure-RTL monitor core
-      fwvip_<proto>_initiator_if.sv      # SV interface — delegates to FIFO instances
-      fwvip_<proto>_target_if.sv
-      fwvip_<proto>_monitor_if.sv
-      fwvip_<proto>_initiator_sv.sv      # thin wrapper: core + interface
-      fwvip_<proto>_target_sv.sv
-      fwvip_<proto>_monitor_sv.sv
-      fwvip_<proto>_checker.sv           # synthesizable assertions
-  tests/
-    flow.yaml                            # test package DFM config (imports VIP package)
-    sim/
-      flow.yaml                          # simulation tasks
-      b2b_tb.sv                          # core-only back-to-back testbench
-      b2b_sv_tb.sv                       # SV-wrapper back-to-back testbench
-    formal/
-      flow.yaml                          # formal tasks
-      fwvip_<proto>_formal_b2b_tb.sv     # formal back-to-back testbench
+    vip.yaml                            # FileSets: xtor-pkg + vip-uvm-hvlsrc
+    uvm/
+      fwvip_<proto>_xtor_pkg.sv         # consumer-side constants (widths / carrier sizes)
+      fwvip_<proto>_pkg.sv              # the VIP package compilation unit
+      fwvip_<proto>_macros.svh          # `fwvip_<proto>_<role>_register(...) helpers
+      fwvip_<proto>_transaction.svh     # uvm_sequence_item
+      fwvip_<proto>_<config>.svh        # (optional) runtime-config uvm_object
+      fwvip_<proto>_<role>*.svh         # per role: agent, config(+_p seam adapter), [driver, seq, …]
+      fwvip_<proto>_reg_adapter.svh     # (memory-mapped protocols only)
+    python/org/fwvip/<proto>/           # backend-independent front-end + cocotb backend
+      transaction.py backend.py <role>.py  cocotb/backend.py
+  tests/  uvm/{tb,env,tests}/  cocotb/  formal/   # benches; formal consumes the kit checker
 ```
 
 ---
 
-## Step 3 — Core Transactor (`*_core.sv`)
+## Step 1 — Map the kit's roles onto archetypes
 
-Rules:
-- Module ports only — no `interface`, no `` `include `` of interface files
-- Parameters for all configurable widths
-- Derived width parameters using macros (not `$bits()`)
-- One `always @(posedge clock or posedge reset)` block per independent stream FSM
-- FIFO handshake: `req_valid`/`req_data`/`req_ready` (ingress), `rsp_valid`/`rsp_data`/`rsp_ready` (egress)
+The kit defines the protocol's roles; classify each by **how data crosses the seam**, which
+dictates its UVM shape:
 
-Wishbone initiator core port pattern:
+- **Driving / active** (WB initiator, UART tx) — the VIP *calls* the transactor to push
+  stimulus. An active agent (sequencer + 1:1 driver).
+- **Responder** (WB target) — *request/response protocols only*. The transactor *calls back*
+  into the VIP with each observed request; the VIP returns a response.
+- **Passive consumer / observer** (WB monitor, UART rx, UART monitor) — an analysis-stream
+  producer. The transactor delivers received/observed data; the VIP republishes it on a
+  `uvm_analysis_port`.
+
+A protocol with no wire response (UART) has **no responder role** and needs no register
+model. A streaming protocol's "receive" side is a *passive consumer*, not a responder.
+
+---
+
+## Step 2 — Consumer-side constants package
+
+The transactor cores are per-instance parameterized; the class-based UVM VIP is not, so it
+fixes its own sizes in a tiny package compiled first. Two shapes:
+
 ```sv
-module fwvip_wb_initiator_core #(
-    parameter int ADDR_WIDTH = 32,
-    parameter int DATA_WIDTH = 32,
-    parameter int _REQ_WIDTH = `FWVIP_WB_REQ_WIDTH(ADDR_WIDTH, DATA_WIDTH),
-    parameter int _RSP_WIDTH = `FWVIP_WB_RSP_WIDTH(ADDR_WIDTH, DATA_WIDTH)
-) (
-    input                       clock, reset,
-    // Protocol signals
-    output reg [ADDR_WIDTH-1:0] adr,
-    output reg                  cyc, stb, we,
-    input                       ack, err,
-    output reg [(DATA_WIDTH/8)-1:0] sel,
-    output reg [DATA_WIDTH-1:0] dat_w,
-    input      [DATA_WIDTH-1:0] dat_r,
-    // FIFO ports
-    input                       req_valid,
-    input      [_REQ_WIDTH-1:0] req_data,
-    output reg                  req_ready,
-    output reg                  rsp_valid,
-    output reg [_REQ_WIDTH-1:0] rsp_data,
-    input                       rsp_ready
-);
+// Width-parameterized bus (fwvip-wb): the kit vif is #(AW,DW), so the config_p threads them.
+package fwvip_wb_xtor_pkg;
+    parameter int ADDR_WIDTH_MAX = 64;
+    parameter int DATA_WIDTH_MAX = 64;
+endpackage
+
+// Fixed-carrier stream (fwvip-uart): plain localparams; the config_p is #(vif_t) only.
+package fwvip_uart_xtor_pkg;
+    parameter int MAX_DATA_BITS = 8;   // carrier; runtime word_bits selects significant bits
+    parameter int STATUS_BITS   = 4;   // line-error nibble {OE,BI,FE,PE}
+    parameter int DIV_WIDTH     = 16;  // baud divisor
+endpackage
 ```
 
-FSM pattern — independent request and response state machines:
+Every VIP class sizes its fields with these constants.
+
+---
+
+## Step 3 — The transaction item
+
+A `uvm_sequence_item` carrying one protocol transfer. Model exactly what the protocol moves:
+
+- **Bus (WB):** `adr`, `dat`, `sel`, `we`, `err` (the driver updates `dat`/`err` in place on
+  reads).
+- **Stream (UART):** one `data` character + a `status` nibble + a tap tag (`is_tx`); no
+  address, no byte-enable, no request/response pairing. Add decode helpers
+  (`parity_err()`, …) and `convert2string()`.
+
+---
+
+## Step 4 — Runtime-configuration object *(only if the protocol has runtime-configurable attributes)*
+
+Static/build-time attributes stay as kit module `parameter`s. *Runtime*-configurable
+attributes get a `uvm_object` mirroring the kit's `<proto>_config_if`. UART's
+`fwvip_uart_framing` carries `divisor/word_bits/parity_*/stop_bits`, offers presets
+(`p8n1()`, `p7e1()`, …), and a `mask()` helper. A cfg (virtual) sequence applies it via each
+role config's `configure(f)`, which forwards to the transactor's held-level `configure(...)`.
+WB has none — skip this step.
+
+---
+
+## Step 5 — UVM package + the **seam-adapter config** pattern
+
 ```sv
-// Request FSM
-always @(posedge clock or posedge reset) begin
-    if (reset) begin /* reset all regs */ end
-    else case (req_state)
-        ST_IDLE: if (req_valid) begin /* latch request, assert CYC/STB, advance state */ end
-        ST_WAIT: if (ack || err) begin /* handle ACK, loop or return to IDLE */ end
-    endcase
+// fwvip_<proto>_pkg.sv
+`include "uvm_macros.svh"
+`include "fwvip_<proto>_macros.svh"
+package fwvip_<proto>_pkg;
+    import uvm_pkg::*;
+    import fwvip_<proto>_xtor_pkg::*;   // Step 2 constants
+    import fw_proto_<proto>_pkg::*;     // kit class layer: interface-classes + *_xtor_bridge
+    // Data/config first (they parameterize configs/sequences), then per role.
+    `include "fwvip_<proto>_transaction.svh"
+    // … (optional) framing/config object …
+    // … per-role: config, [driver], [seq], agent …
+    // … (optional) reg adapter …
+endpackage
+```
+
+Compile order matters: a type used as a parameter (e.g. a responder item, or the
+transaction) must be included before the component that specializes on it.
+
+**The seam adapter (every role uses this).** Each role has an abstract config (the
+vif-agnostic type stored in / fetched from the config DB) and a width/vif-aware
+specialization `*_config_p #(type vif_t [, int AW, int DW])` that:
+
+1. holds the kit transactor vif,
+2. constructs a kit `<proto>_<role>_xtor_bridge` from it,
+3. **implements or forwards** the kit's method API for that role, and
+4. exposes a static `set()` placing itself into `uvm_config_db` under `"cfg"`.
+
+This is what lets a non-parameterized component talk to a parameterized transactor, and it
+is the single pattern shared by *all* roles in *both* VIPs.
+
+---
+
+## Step 6 — Wire each role by its interaction pattern
+
+Pick the pattern per role (Step 1). All three appear across the two reference VIPs.
+
+### Pattern A — Call-driven (driving role: WB initiator, UART tx)
+Active agent: sequencer + a 1:1 driver whose `run_phase` pulls an item and calls the config,
+which calls the kit. No background thread.
+
+```sv
+// driver run_phase
+forever begin
+    seq_item_port.get_next_item(t);
+    m_cfg.send(t.data);            // UART: config.send -> bridge.send
+    //  or: m_cfg.access(t);       // WB: config.access -> vif.request()/response(), capture read data
+    seq_item_port.item_done();
 end
+```
+WB's `access()` does `vif.request(adr,dat,sel,we); vif.response(dat_t,err);` and writes read
+data back into `t`. UART's `send()` lazily builds the bridge (`ensure()`) then `bridge.send(data)`.
 
-// Response FSM (or inline response logic in the same always block as above)
-// Latch response data on ACK, hold rsp_valid until rsp_ready consumed
+### Pattern B — Callback responder (request/response only: WB target)
+The kit's `<proto>_target_xtor_bridge` polls the request FIFO and *calls* a method-API
+callback per request; the VIP rides that callback into a UVM responder sequence:
+
+- `*_config_p implements <proto>_proto_if #(AW,DW)`, owns the bridge, and `start()`s it.
+  Its exact-width `access(...)` builds a MAX-width transaction and hands it to the driver via
+  `m_drv.service(t)`, then copies `dat_r`/`err` back.
+- the driver's `run_phase` is just `m_cfg.start(this); wait fork;`; its `service(t)` does
+  `get_next_item(it); it.access(t); item_done();`.
+- UVM forbids sending a sequence to `start_item()` (`SEQNOTITM`), so the responder sequence
+  (`implements fwvip_<proto>_target_if`) sends a lightweight **wrapper item** carrying a
+  handle back to itself; `it.access(t)` forwards to the responder's `handle_request(t)`.
+
+Flow: **bus → kit bridge → config.access() → driver.service() → sequencer → handle_request()**.
+The responder is *called*, never polls. (A reusable memory responder belongs in the test/env
+library, not the VIP package.)
+
+### Pattern C — Passive analysis producer (WB monitor, UART rx, UART monitor)
+The agent owns a `uvm_analysis_port`, hands it to the config (`set_ap(ap)`), and the config
+republishes each item. Two delivery sub-flavors — use whichever the kit offers:
+
+- **C1 push-callback (UART rx/monitor).** `*_config_p implements <proto>_<role>_if`; its
+  agent's `run_phase` calls `m_cfg.start()`, which builds the kit consumer bridge with `this`
+  as the sink and forks `run()` — the bridge then *calls* `recv(...)` / `observe(...)` per
+  item, and the config does `ap.write(t)`. (RX's `recv()` can block on a `set_stall` knob to
+  provoke overrun — a deliberate backpressure hook.)
+- **C2 poll-loop (WB monitor).** The agent's `run_phase` loops `m_cfg.wait_txn(...)` (which
+  delegates to `vif.wait_txn(...)`), builds a transaction, and `ap.write(t)`.
+
+---
+
+## Step 7 — Register adapter *(memory-mapped protocols only)*
+
+If the protocol is memory-mapped, supply a `uvm_reg_adapter` mapping `uvm_reg_bus_op` ↔ the
+VIP transaction (`reg2bus`/`bus2reg`) so a `uvm_reg_block` can run front-door over the VIP.
+Streaming protocols (UART) have no addresses and skip this.
+
+---
+
+## Step 8 — Register macros
+
+Provide one-line config-DB binding macros, each expanding to the matching
+`*_config_p #(...)::set(...)`. The threaded arguments are protocol-shaped:
+
+```sv
+// Bus (widths threaded):
+`define fwvip_wb_initiator_register(ADDR_WIDTH,DATA_WIDTH,vif,inst) \
+    fwvip_wb_initiator_config_p #(virtual wb_initiator_xtor_if #(ADDR_WIDTH,DATA_WIDTH), \
+        ADDR_WIDTH, DATA_WIDTH)::set(null, "", "cfg", vif);
+
+// Stream (no widths; monitor adds a tap selector):
+`define fwvip_uart_tx_register(vif, inst) \
+    fwvip_uart_tx_config_p #(virtual uart_tx_xtor_if)::set(null, inst, "cfg", vif);
+`define fwvip_uart_monitor_register(vif, inst, is_tx) \
+    fwvip_uart_monitor_config_p #(virtual uart_monitor_xtor_if)::set(null, inst, "cfg", vif, is_tx);
 ```
 
 ---
 
-## Step 4 — SV Interface (`*_if.sv`)
+## Step 9 — Python / cocotb front-end
 
-Rules:
-- `interface … (input clock, input reset)`
-- Use `always @(posedge clock …)` — **never `always_ff`** (Verilator crash)
-- Do **not** use `automatic logic` inside `always` blocks — use interface-level `reg`
-- Instantiate `fwvip_sv_ingress_fifo` for each ingress stream, `fwvip_sv_egress_fifo` for each egress stream
-- Expose `task put(…)` and `task get(…)` that delegate to the FIFO instances
+The VIP also ships a **backend-independent Python front-end** so the same VIP drives a cocotb
+(or pure-Python, or DPI) environment. Three thin layers:
 
-Wishbone initiator interface pattern:
-```sv
-`include "fwvip_wb_macros.svh"
+1. **`transaction.py`** — dataclasses + a `*Layout` that packs/unpacks the ready/valid bit
+   vectors (MSB-first, matching the kit's packed structs). A held *runtime config* is **not**
+   a streamed vector — carry it as a plain dataclass (UART `UartFraming`) the backend drives
+   onto the core's discrete `cfg_*` ports.
+2. **`backend.py`** — abstract base classes that only move bits + expose reset (and
+   `configure()` if there's held config). Shape follows the streams: a paired bus exposes
+   `push_request`/`pop_response` (WB); independent one-way streams expose role-specific
+   `push_char` / `pop_char` / `pop` (UART).
+3. **`<role>.py`** — friendly front-ends over a backend (WB `write/read`,
+   `serve_memory`, `next`; UART `send`, `recv`, `next` + async iteration; `configure(framing)`).
 
-interface fwvip_wb_initiator_if #(
-    parameter int ADDR_WIDTH = 32,
-    parameter int DATA_WIDTH = 32,
-    parameter int _REQ_WIDTH = `FWVIP_WB_REQ_WIDTH(ADDR_WIDTH, DATA_WIDTH)
-) (input clock, input reset);
-
-    wire req_valid, req_ready;
-    wire [_REQ_WIDTH-1:0] req_data;
-    wire rsp_valid, rsp_ready;
-    wire [_REQ_WIDTH-1:0] rsp_data;
-
-    fwvip_sv_ingress_fifo #(.WIDTH(_REQ_WIDTH)) req_fifo (
-        .clock(clock), .reset(reset),
-        .valid(req_valid), .data(req_data), .ready(req_ready)
-    );
-    fwvip_sv_egress_fifo #(.WIDTH(_REQ_WIDTH)) rsp_fifo (
-        .clock(clock), .reset(reset),
-        .valid(rsp_valid), .data(rsp_data), .ready(rsp_ready)
-    );
-
-    task req_put(bit [_REQ_WIDTH-1:0] data); req_fifo.put(data); endtask
-    task rsp_get(output bit [_REQ_WIDTH-1:0] data); rsp_fifo.get(data); endtask
-endinterface
-```
+The **cocotb backend** (`cocotb/backend.py`) is constructed from a handle to a transactor
+*core* (`dut.u_<role>`), drives its RV ports with the canonical event-driven primitives
+(`_rv_get`/`_rv_put`: sleep on the signal edge while idle; transfer + settle on clock edges),
+and writes held config straight to the `cfg_*` ports. See
+`fwvip-core/docs/cocotb-performance.md`.
 
 ---
 
-## Step 5 — SV Wrapper Module (`*_sv.sv`)
+## Step 10 — Bench wiring + reset synchronization
 
-The wrapper instantiates both the core and the interface, wiring FIFO signals between them:
+A thin **hdl_top** / **hvl_top** split:
 
-```sv
-module fwvip_wb_initiator_sv #(/* same params as core */) (
-    input clock, reset,
-    // Protocol bus ports only — no FIFO ports
-    output [ADDR_WIDTH-1:0] adr, …
-);
-    fwvip_wb_initiator_if #(.ADDR_WIDTH(ADDR_WIDTH), …) bfm_if (.clock(clock), .reset(reset));
+- **hdl_top** instantiates the kit transactor wrappers (`<proto>_<role>_xtor`) on a shared
+  bus/line, plus the **fwvip-core** clock/reset transactor interfaces. Bind the kit checker
+  here if the bench checks the protocol. Add any protocol-specific injection interface (UART
+  has a raw-line `inject_if` for FE/BI scenarios).
+- **hvl_top** binds: call the `fwvip_<proto>_<role>_register(...)` macros pointing at
+  `u_hdl.u_<role>.u_if`, set the `fwvip_clock_config_p`/`fwvip_reset_config_p` providers (and
+  any extra vifs) into the config DB, then `run_test()`.
 
-    fwvip_wb_initiator_core #(.ADDR_WIDTH(ADDR_WIDTH), …) core (
-        .clock(clock), .reset(reset),
-        // Protocol signals connect to module ports
-        .adr(adr), .cyc(cyc), …,
-        // FIFO signals connect to bfm_if wires
-        .req_valid(bfm_if.req_valid), .req_data(bfm_if.req_data), .req_ready(bfm_if.req_ready),
-        .rsp_valid(bfm_if.rsp_valid), .rsp_data(bfm_if.rsp_data), .rsp_ready(bfm_if.rsp_ready)
-    );
-endmodule
-```
+> **Reset is sourced from fwvip-core, not faked.** The env retrieves the reset/clock
+> providers and the base virtual sequence waits on the reset provider before driving
+> stimulus. Do **not** reintroduce fixed-delay `wait_reset` hacks.
 
-The testbench accesses the interface via direct hierarchical reference:
-```sv
-// In the testbench — no typedef virtual needed
-u_initiator.bfm_if.req_put({addr, data, 1'b1});
-u_initiator.bfm_if.rsp_get(rsp);
-```
+The **env** builds the agents + a virtual sequencer + a scoreboard, wires the vseqr to the
+sub-sequencers/configs, and connects analysis ports to the scoreboard. Scoreboard topology is
+protocol-shaped: WB feeds the single monitor stream in; UART uses the **TX-line monitor tap as
+the reference** and the **RX stream as delivered**. The reusable sequence library lives in the
+test/env package, not the VIP.
 
 ---
 
-## Step 6 — Protocol Checker (`fwvip_*_checker.sv`)
+## Step 11 — DFM packaging & tests
 
-Write synthesizable assertions (compatible with Yosys/sby for formal verification):
+**Package `flow.yaml`** imports the kit and fwvip-core and pulls in the fragments:
 
-```sv
-module fwvip_wb_checker #(parameter int ADDR_WIDTH=32, parameter int DATA_WIDTH=32) (
-    input clock, reset, cyc, stb, ack, err, we, …
-);
-    // Example: STB requires CYC
-    always @(posedge clock) begin
-        if (!reset && stb) assert(cyc) else $error("STB without CYC");
-    end
-endmodule
-```
-
----
-
-## Step 7 — Tests
-
-### Core-only testbench (`b2b_tb.sv`)
-Instantiate initiator core and target core back-to-back. Drive requests into the initiator's ingress FIFO directly (using `initial` blocks and `@(posedge clock)`). Verify responses. Include the checker.
-
-### SV-wrapper testbench (`b2b_sv_tb.sv`)
-Instantiate `fwvip_*_initiator_sv`, `fwvip_*_target_sv`, `fwvip_*_monitor_sv`. Connect bus wires between them. Call tasks via hierarchical reference:
-```sv
-u_initiator.bfm_if.req_put({addr, data, 1'b0});
-u_initiator.bfm_if.rsp_get(rsp);
-u_monitor.bfm_if.get(mon_data);
-```
-
-**Do not use `typedef virtual` for parameterized interfaces with Verilator** — it crashes. Use direct hierarchical paths instead.
-
-### Formal testbench (`fwvip_*_formal_b2b_tb.sv`)
-Instantiate initiator core + target core + checker. Use `assume` on FIFO inputs, `assert` on properties. Compatible with Yosys/sby BMC.
-
----
-
-## Step 8 — flow.yaml Files
-
-### VIP package `flow.yaml` (at `resources/example/<proto>/flow.yaml`)
 ```yaml
 package:
-  name: org.featherweight-vip.<proto>
+  name: org.fwvip.<proto>
   imports:
-  - ${{ srcdir }}/../../../flow.yaml  # import fwvip-common
-  fragments:
-  - src/sv/flow.yaml
+  - "${{ rootdir }}/../fw-proto-<proto>/flow.yaml"   # transactor kit
+  - "${{ rootdir }}/../fwvip-core/flow.yaml"          # clock/reset providers
+  fragments: [src/vip.yaml, tests/flow.yaml]
 ```
 
-### SV sources fragment (`src/sv/flow.yaml`)
-```yaml
-fragment:
-  name: src
-  tasks:
-  - export: initiator-core
-    uses: std.FileSet
-    with: {type: systemVerilogSource, include: [fwvip_<proto>_initiator_core.sv], incdirs: [${{ srcdir }}]}
+**`src/vip.yaml`** exports the constants package first, then the UVM package (which `needs`
+the kit's class layer): WB needs `fw.proto.wb.xtor-sv` + `fw.proto.wb.class`; UART needs
+`fw.proto.uart.files`. Include only the package compilation unit (`fwvip_<proto>_pkg.sv`); the
+`.svh` classes come in via the incdir (globbing `*.sv` double-compiles the xtor-pkg).
 
-  - export: initiator-sv
-    uses: std.FileSet
-    needs:
-    - org.fwvip.common.ingress-fifo
-    - org.fwvip.common.egress-fifo
-    with: {type: systemVerilogSource, include: [fwvip_<proto>_initiator_if.sv, fwvip_<proto>_initiator_sv.sv], incdirs: [${{ srcdir }}]}
+**Tests.** UVM scenarios run one image + one test class selected by a `+SEQ=<vseq>` plusarg.
+The cocotb flow uses the `dv-flow-libcocotb` tasks and needs the kit's `xtor-core`. The formal
+TBs consume the kit's `<proto>_proto_checker` directly — the VIP vendors no checker.
 
-  # Similarly for target-core, target-sv, monitor-core, monitor-sv, checker
-  # monitor-sv only needs org.fwvip.common.egress-fifo
-```
-
-The `needs:` on an `export:` task causes the FIFO files to be included automatically whenever a downstream task depends on `initiator-sv`.
-
-### Test package `flow.yaml` (`tests/flow.yaml`)
-```yaml
-package:
-  name: org.featherweight-vip.<proto>.tests
-  imports:
-  - ${{ rootdir }}/../flow.yaml  # import the VIP package
-  fragments:
-  - sim/flow.yaml
-  - formal/flow.yaml
-```
-
-### Simulation fragment (`tests/sim/flow.yaml`)
-```yaml
-fragment:
-  name: sim
-  tasks:
-  - local: b2b
-    uses: hdlsim.vlt.SimImage
-    with: {top: [b2b_tb]}
-    needs:
-    - org.featherweight-vip.<proto>.src.initiator-core
-    - org.featherweight-vip.<proto>.src.target-core
-    - org.featherweight-vip.<proto>.src.checker
-    - b2b-src
-
-  - root: b2b-sim
-    uses: hdlsim.vlt.SimRun
-    needs: [b2b]
-
-  - local: b2b-src
-    uses: std.FileSet
-    with: {type: systemVerilogSource, include: [b2b_tb.sv]}
-```
-
-**Fragment name uniqueness**: Fragment names must be globally unique across all loaded packages. If running tests in a workspace that also loads `fwvip-common` tests, ensure fragment names do not collide (e.g., fwvip-common uses `fifo-sim`, not `sim`).
-
-### Formal fragment (`tests/formal/flow.yaml`)
-```yaml
-fragment:
-  name: formal
-  tasks:
-  - local: sby-path
-    uses: std.SetEnv
-    with:
-      prepend_path: {PATH: /tools/symbiyosys/<version>/bin}
-
-  - root: <proto>-b2b-bmc
-    uses: formal.sby.BMC
-    with: {top: fwvip_<proto>_formal_b2b_tb, depth: 20}
-    needs:
-    - org.featherweight-vip.<proto>.src.initiator-core
-    - org.featherweight-vip.<proto>.src.target-core
-    - org.featherweight-vip.<proto>.src.checker
-    - formal-src
-    - sby-path
-
-  - local: formal-src
-    uses: std.FileSet
-    with: {type: systemVerilogSource, include: [fwvip_<proto>_formal_b2b_tb.sv]}
+```sh
+dfm run org.fwvip.<proto>.uvm-test-smoke    # UVM smoke
+dfm run org.fwvip.<proto>.cocotb-check      # cocotb front-end over the cores
 ```
 
 ---
 
-## Wishbone Example Reference
+## Step 12 — VIP Usage Skill (required)
 
-The complete working example is at `resources/example/wishbone/`. Key files:
+Creating the VIP is only half the job. It exists so *another* agent can drop it into a
+testbench — and that agent needs instructions written for **this specific VIP**, not the
+generic patterns above. So every VIP ships its own **`fwvip-<proto>-usage` skill**: a SKILL.md, authored
+as the final step, that teaches an agent how to connect and drive *this* VIP.
+
+Do **not** skip it, and do **not** make it generic. Fill it with the concrete role set, class
+names, register macros, task/sequence signatures, runtime-config object, and Python front-end
+calls this VIP actually exposes — copied from the files you just generated and verified.
+
+### Location and frontmatter
+
+`skills/fwvip-<proto>-usage/SKILL.md` (named after the VIP, e.g. `fwvip-wb-usage`, to stay unique):
+
+```markdown
+---
+name: fwvip-<proto>-usage
+description: Connect and drive the fwvip-<proto> Verification IP — bind its agents into a
+  UVM env (register macros + config DB), write stimulus/responder sequences, apply runtime
+  config, [run the reg-model front door,] and/or drive the cocotb front-end. Use when
+  integrating fwvip-<proto> into a testbench or generating stimulus for it.
+tools: Read, Write, Edit, Bash, Grep, Glob
+---
+```
+
+The `description` must name the protocol and the verbs an integrator searches for
+("connect", "drive", "stimulus", "configure", "reg model" if applicable).
+
+### Required content (concrete for this VIP)
+
+1. **What the VIP provides** — its actual agents (e.g. initiator/target/monitor, or
+   tx/rx/monitor), the transaction, any runtime-config object, the reg adapter *if present*,
+   and the Python front-end. One line each — describe the real role set, not a fixed triad.
+2. **DFM dependency** — package `org.fwvip.<proto>`, the FileSet to `need`
+   (`org.fwvip.<proto>.vip-uvm-hvlsrc`), and that it transitively pulls the kit. Copy real
+   names from `src/vip.yaml`.
+3. **UVM bench wiring** — hdl_top (kit `<proto>_<role>_xtor` + fwvip-core clock/reset ifs +
+   any injection if) and hvl_top (the `register(...)` macro calls + providers + `run_test()`),
+   as a copy-pasteable skeleton with real argument lists.
+4. **Stimulus & responders/consumers** — how to drive the active role(s); for a
+   request/response protocol, how to write a responder by extending the responder sequence and
+   overriding `handle_request`; for a passive consumer, how to subscribe to its analysis port.
+5. **Runtime configuration** — *if present*, how to build/apply the config object (e.g. the
+   framing presets) to each role.
+6. **Register model** — *if present*, how to attach the reg adapter to a `uvm_reg_block`/map.
+7. **cocotb front-end** — constructing the `*` front-ends from `Cocotb*Backend(dut.u_<role>)`
+   and the real calls, with the plain-Verilog top showing the cores wired up.
+8. **Pitfalls** — reset from the fwvip-core providers (no fixed-delay hacks); **no
+   `typedef virtual <if>#(…)` in procedural code** (Verilator crash) — use the register macros;
+   width/carrier policy; cocotb backends bind to the transactor *core* handle.
+9. **A minimal worked example** — point at `tests/uvm/` and `tests/cocotb/` with the
+   `dfm run` commands.
+
+### Source of truth
+
+Generate the usage skill **from the files you just created**, after they pass their tests —
+so names, macros, and signatures match real, working code. Update it in the same change as the
+VIP.
+
+---
+
+## Pitfalls (carry into the VIP and its usage skill)
+
+- **Don't rebuild the kit.** Cores, interfaces, wrappers, bridges, method API, and checker
+  belong to `fw-proto-<proto>`. The VIP only adds methodology classes and a Python front-end.
+- **Let the protocol pick the role shapes.** Driving / responder / passive-consumer — not a
+  hardcoded initiator/target/monitor triad. No wire response ⇒ no responder, no reg model.
+- **Constants policy.** Width-parameterized bus ⇒ `*_WIDTH_MAX` + `*_config_p #(vif_t,AW,DW)`;
+  fixed carrier ⇒ plain localparams + `*_config_p #(vif_t)`.
+- **The seam adapter is the config.** Every role's `*_config_p` holds the vif, owns a kit
+  bridge, and forwards/implements the kit method API. That is its whole reason to exist.
+- **Passive ≠ responder.** A consumer republishes on an analysis port (push-callback or
+  poll-loop); only a true request/response role uses the callback-responder + wrapper-item.
+- **No `typedef virtual <if> #(…)` in procedural code** — Verilator crashes. Bind vifs via the
+  `register` macros and access through the config.
+- **Reset from fwvip-core.** Use the clock/reset providers, not fixed delays.
+- **cocotb is event-driven.** Use the `_rv_get`/`_rv_put` handshake; drive held config onto
+  the `cfg_*` ports. Don't clock-poll. See `fwvip-core/docs/cocotb-performance.md`.
+
+---
+
+## Reference VIPs
+
+### `fwvip-wb` — synchronous memory-mapped bus
 
 | File | Purpose |
 |------|---------|
-| `src/sv/fwvip_wb_macros.svh` | Request/response packed struct macros and arithmetic width macros |
-| `src/sv/fwvip_wb_initiator_core.sv` | Initiator RTL: req FSM drives CYC/STB/ADR/DAT_W, captures ACK into rsp egress FIFO |
-| `src/sv/fwvip_wb_target_core.sv` | Target RTL: monitors CYC/STB into req egress FIFO, accepts rsp from ingress FIFO, asserts ACK |
-| `src/sv/fwvip_wb_monitor_core.sv` | Monitor RTL: captures all bus activity passively into egress FIFOs |
-| `src/sv/fwvip_wb_initiator_if.sv` | SV interface: `req_fifo` (ingress) + `rsp_fifo` (egress), `req_put()`/`rsp_get()` tasks |
-| `src/sv/fwvip_wb_initiator_sv.sv` | Wrapper: exposes Wishbone B.3 ports, contains `bfm_if` + `core` instances |
-| `src/sv/fwvip_wb_checker.sv` | Synthesizable assertions (CYC/STB protocol rules) |
-| `tests/sim/b2b_tb.sv` | Core-only back-to-back sim test |
-| `tests/sim/b2b_sv_tb.sv` | SV-wrapper back-to-back sim test with hierarchical interface calls |
-| `tests/formal/fwvip_wb_formal_b2b_tb.sv` | Formal BMC testbench using sby |
+| `src/uvm/fwvip_wb_xtor_pkg.sv` | `ADDR/DATA_WIDTH_MAX` (width-parameterized policy) |
+| `src/uvm/fwvip_wb_pkg.sv` | VIP package (imports `fw_proto_wb_pkg`) |
+| `src/uvm/fwvip_wb_transaction.svh` | adr/dat/sel/we/err item |
+| `src/uvm/fwvip_wb_initiator*.svh` | Pattern A: driver calls `vif.request/response` |
+| `src/uvm/fwvip_wb_target*.svh` | Pattern B: responder via kit bridge (config_p+if+item+driver) |
+| `src/uvm/fwvip_wb_monitor*.svh` | Pattern C2: poll `vif.wait_txn` |
+| `src/uvm/fwvip_wb_reg_adapter.svh` | `uvm_reg_adapter` |
+| `src/uvm/fwvip_wb_macros.svh` | width-threaded `register` macros |
+| `src/python/org/fwvip/wb/` | front-end + cocotb backend |
 
-### Wishbone transaction structs
+### `fwvip-uart` — asynchronous streaming line protocol
 
-```sv
-`FWVIP_WB_REQ_STRUCT(32, 32)   // { bit[31:0] adr; bit[31:0] dat; bit we; }
-`FWVIP_WB_RSP_STRUCT(32, 32)   // { bit[31:0] dat; bit err; }
-`FWVIP_WB_MON_STRUCT(32, 32)   // { adr, dat, err, we, cyc_len }
-```
+| File | Purpose |
+|------|---------|
+| `src/uvm/fwvip_uart_xtor_pkg.sv` | `MAX_DATA_BITS/STATUS_BITS/DIV_WIDTH` (fixed-carrier policy) |
+| `src/uvm/fwvip_uart_pkg.sv` | VIP package (imports `fw_proto_uart_pkg`) |
+| `src/uvm/fwvip_uart_transaction.svh` | character + status nibble + tap tag |
+| `src/uvm/fwvip_uart_framing.svh` | runtime-config object + presets (Step 4) |
+| `src/uvm/fwvip_uart_tx*.svh` | Pattern A: driver calls `config.send` |
+| `src/uvm/fwvip_uart_rx*.svh` | Pattern C1: push `recv()` callback → analysis port (+ stall knob) |
+| `src/uvm/fwvip_uart_monitor*.svh` | Pattern C1: push `observe()` callback → analysis port |
+| `src/uvm/fwvip_uart_macros.svh` | no-width `register` macros (+ monitor tap selector) |
+| `src/python/org/fwvip/uart/` | front-end + cocotb backend (held framing on `cfg_*`) |
 
-### Running the tests
+### Running
 
 ```sh
-# From fwvip-common root
-cd /path/to/fwvip-common
-
-# Core-only simulation
-packages/python/bin/python -m dv_flow.mgr run \
-    org.featherweight-vip.wishbone.tests.sim.b2b-sim \
-    --root resources/example/wishbone/tests/
-
-# SV-wrapper simulation
-packages/python/bin/python -m dv_flow.mgr run \
-    org.featherweight-vip.wishbone.tests.sim.b2b-sv-sim \
-    --root resources/example/wishbone/tests/
-
-# Formal BMC proof
-packages/python/bin/python -m dv_flow.mgr run \
-    org.featherweight-vip.wishbone.tests.formal.wb-b2b-bmc \
-    --root resources/example/wishbone/tests/
+dfm run org.fwvip.wb.uvm-test-smoke      # WB: writes + self-checked readback
+dfm run org.fwvip.wb.uvm-test-reg        # WB: reg-model front door
+dfm run org.fwvip.wb.cocotb-check        # WB: cocotb front-end
+dfm run org.fwvip.uart.uvm-test-smoke    # UART: TX→RX, scoreboard-checked
+dfm run org.fwvip.uart.cocotb-check      # UART: cocotb front-end
 ```
 
-Task names follow the pattern: `<package-name>.<fragment-name>.<task-name>`. Use `dfm show tasks --root <tests-dir>` to list all available tasks.
+Use `dfm show tasks --root tests/` to list all scenario tasks.

@@ -20,3 +20,28 @@ fragment:
       - fwvip_sv_egress_fifo.sv
       incdirs:
       - ${{ srcdir }}
+
+  # Signal-level clock/reset transactor interfaces. The interface-class APIs
+  # (fwvip_clock_if / fwvip_wait_reset_if / fwvip_reset_if) live alongside as
+  # .svh and are pulled in via the incdir by whoever needs them (e.g. the UVM
+  # core package). Exposing srcdir as an incdir lets consumers `include them.
+  - export: clock-reset-xtor
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_clock_xtor_if.sv
+      - fwvip_reset_xtor_if.sv
+      incdirs:
+      - ${{ srcdir }}
+
+  # Plain-SV package of the abstract clock/reset interface-class APIs. No UVM
+  # dependency; consumed by plain-SV TBs and by fwvip_core_uvm_pkg alike.
+  - export: core-pkg
+    uses: std.FileSet
+    with:
+      type: systemVerilogSource
+      include:
+      - fwvip_core_pkg.sv
+      incdirs:
+      - ${{ srcdir }}

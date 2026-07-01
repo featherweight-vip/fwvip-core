@@ -2,9 +2,10 @@
 # yaml-language-server: $schema=https://dv-flow.github.io/flow.dv.schema.json
 
 package:
-  name: org.fwvip.common
+  name: org.fwvip.core
 
   fragments:
   - src/sv/flow.yaml
+  - src/uvm/flow.yaml
   - tests/flow.yaml
 
